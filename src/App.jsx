@@ -1,8 +1,35 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from "react";
-import { Search, Check, X, ChevronLeft, UserCheck, Users, UtensilsCrossed, ClipboardList, LayoutGrid, Plus, Loader2, WifiOff } from "lucide-react";
+import { Search, Check, X, ChevronLeft, UserCheck, Users, UtensilsCrossed, ClipboardList, LayoutGrid, Plus, Loader2, WifiOff, Upload, FileSpreadsheet } from "lucide-react";
+import * as XLSX from "xlsx";
 
 const SUPABASE_URL = "https://onrdmjrrvgztkzmwdzzq.supabase.co";
 const SUPABASE_KEY = "sb_publishable_NbdrdOQHYblAME-Ur4kX1g_PhDUm51m";
+
+const KNOWN_DIETS = ["Celíaco", "Vegetariano", "Vegano", "Diabético", "Alergia"];
+
+function parseDietCell(raw) {
+  if (!raw) return [];
+  return String(raw)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => KNOWN_DIETS.find((d) => d.toLowerCase() === s.toLowerCase()) || s);
+}
+
+function parseGuestsWorkbook(arrayBuffer) {
+  const wb = XLSX.read(arrayBuffer, { type: "array" });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+  return rows
+    .map((row) => {
+      const name = String(row["Nombre"] ?? row["nombre"] ?? "").trim();
+      const table = Number(row["Mesa"] ?? row["mesa"] ?? 0);
+      const diet = parseDietCell(row["Dieta"] ?? row["dieta"]);
+      const notes = String(row["Notas"] ?? row["notas"] ?? "").trim();
+      return { name, table, diet, notes };
+    })
+    .filter((g) => g.name && g.table);
+}
 
 async function sb(path, options = {}) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
@@ -145,6 +172,23 @@ export default function App() {
     }
   };
 
+  const importGuests = async (parsedRows) => {
+    const payload = parsedRows.map((g) => ({
+      event_id: eventId,
+      name: g.name,
+      table_number: g.table,
+      status: "pending",
+      diet: g.diet,
+      notes: g.notes,
+    }));
+    const created = await sb(`guests`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    setGuests((gs) => [...gs, ...created.map(normalizeGuest)]);
+    return created.length;
+  };
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return guests;
@@ -233,7 +277,7 @@ export default function App() {
             onAdd={() => setShowAdd(true)}
           />
         ) : (
-          <AdminView guests={guests} stats={stats} tables={tables} />
+          <AdminView guests={guests} stats={stats} tables={tables} onImport={importGuests} />
         )}
       </div>
 
@@ -437,7 +481,8 @@ function StatPill({ label, value, tone }) {
   );
 }
 
-function AdminView({ guests, stats, tables }) {
+function AdminView({ guests, stats, tables, onImport }) {
+  const [showImport, setShowImport] = useState(false);
   const pct = stats.total ? Math.round((stats.arrived / stats.total) * 100) : 0;
   const dietGroups = useMemo(() => {
     const map = {};
@@ -452,6 +497,27 @@ function AdminView({ guests, stats, tables }) {
 
   return (
     <div>
+      <button
+        onClick={() => setShowImport(true)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 8,
+          width: "100%",
+          padding: "12px",
+          borderRadius: 12,
+          border: "1.5px dashed #B8935F",
+          background: "#FBF3E7",
+          color: "#8A5A2A",
+          fontWeight: 700,
+          fontSize: 13.5,
+          marginBottom: 18,
+        }}
+      >
+        <FileSpreadsheet size={17} /> Importar invitados desde Excel
+      </button>
+
       <div style={{ background: "#fff", border: "1.5px solid #E5DFD3", borderRadius: 16, padding: 18, marginBottom: 18 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
           <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 16 }}>Ingreso general</div>
@@ -528,6 +594,145 @@ function AdminView({ guests, stats, tables }) {
           ))}
         </div>
       )}
+
+      {showImport && <ImportModal onClose={() => setShowImport(false)} onImport={onImport} />}
+    </div>
+  );
+}
+
+function ImportModal({ onClose, onImport }) {
+  const [rows, setRows] = useState(null);
+  const [fileName, setFileName] = useState("");
+  const [status, setStatus] = useState("idle"); // idle | importing | done | error
+  const [errorMsg, setErrorMsg] = useState("");
+  const [importedCount, setImportedCount] = useState(0);
+
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+    setStatus("idle");
+    setErrorMsg("");
+    try {
+      const buffer = await file.arrayBuffer();
+      const parsed = parseGuestsWorkbook(buffer);
+      setRows(parsed);
+    } catch (err) {
+      setErrorMsg("No se pudo leer el archivo. Verificá que sea un Excel válido.");
+      setRows(null);
+    }
+  };
+
+  const handleImport = async () => {
+    if (!rows || rows.length === 0) return;
+    setStatus("importing");
+    try {
+      const count = await onImport(rows);
+      setImportedCount(count);
+      setStatus("done");
+    } catch (err) {
+      setErrorMsg(`No se pudo importar: ${err.message}`);
+      setStatus("error");
+    }
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "#1B243088", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50 }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{ background: "#FAF7F2", borderRadius: "20px 20px 0 0", width: "100%", maxWidth: 560, padding: "18px 18px 28px", maxHeight: "85vh", overflowY: "auto" }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+          <button onClick={onClose} style={{ border: "none", background: "none", color: "#8A7F6B", display: "flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: 4 }}>
+            <ChevronLeft size={17} /> Cerrar
+          </button>
+          <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 15 }}>Importar invitados</div>
+          <div style={{ width: 58 }} />
+        </div>
+
+        {status === "done" ? (
+          <div style={{ textAlign: "center", padding: "20px 0" }}>
+            <div style={{ fontSize: 40, marginBottom: 10 }}>✅</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "#1B2430", marginBottom: 6 }}>
+              {importedCount} invitados importados
+            </div>
+            <div style={{ fontSize: 13, color: "#8A7F6B", marginBottom: 20 }}>Ya los podés ver en Recepción y Admin.</div>
+            <button
+              onClick={onClose}
+              style={{ width: "100%", padding: "13px", borderRadius: 12, border: "none", background: "#1B2430", color: "#FAF7F2", fontWeight: 700, fontSize: 14.5 }}
+            >
+              Listo
+            </button>
+          </div>
+        ) : (
+          <>
+            <div style={{ fontSize: 13, color: "#8A7F6B", marginBottom: 14, lineHeight: 1.5 }}>
+              El archivo debe tener columnas <b>Nombre</b> y <b>Mesa</b> (obligatorias), y opcionalmente <b>Dieta</b> y <b>Notas</b>.
+            </div>
+
+            <label
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                padding: "24px",
+                borderRadius: 14,
+                border: "1.5px dashed #E5DFD3",
+                background: "#fff",
+                marginBottom: 16,
+                cursor: "pointer",
+                textAlign: "center",
+              }}
+            >
+              <Upload size={22} color="#8A7F6B" />
+              <span style={{ fontSize: 13.5, fontWeight: 600, color: "#1B2430" }}>
+                {fileName || "Tocá para elegir un archivo .xlsx"}
+              </span>
+              <input type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} style={{ display: "none" }} />
+            </label>
+
+            {errorMsg && (
+              <div style={{ fontSize: 13, color: "#A8493D", background: "#F4DEDC", borderRadius: 10, padding: "10px 12px", marginBottom: 16 }}>
+                {errorMsg}
+              </div>
+            )}
+
+            {rows && rows.length > 0 && (
+              <div style={{ fontSize: 13.5, color: "#4C7A5E", background: "#E4EEE0", borderRadius: 10, padding: "10px 12px", marginBottom: 16, fontWeight: 600 }}>
+                Se encontraron {rows.length} invitados listos para importar.
+              </div>
+            )}
+
+            {rows && rows.length === 0 && (
+              <div style={{ fontSize: 13.5, color: "#A8493D", background: "#F4DEDC", borderRadius: 10, padding: "10px 12px", marginBottom: 16 }}>
+                No se encontraron filas válidas (revisá que existan las columnas "Nombre" y "Mesa").
+              </div>
+            )}
+
+            <button
+              onClick={handleImport}
+              disabled={!rows || rows.length === 0 || status === "importing"}
+              style={{
+                width: "100%",
+                padding: "13px",
+                borderRadius: 12,
+                border: "none",
+                background: rows && rows.length > 0 ? "#1B2430" : "#D8D2C4",
+                color: "#FAF7F2",
+                fontWeight: 700,
+                fontSize: 14.5,
+              }}
+            >
+              {status === "importing" ? "Importando..." : "Importar"}
+            </button>
+          </>
+        )}
+      </div>
     </div>
   );
 }
