@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from "react";
-import { Search, Check, X, ChevronLeft, UserCheck, Users, UtensilsCrossed, ClipboardList, LayoutGrid, Plus, Loader2, WifiOff, Upload, FileSpreadsheet } from "lucide-react";
+import { Search, Check, X, ChevronLeft, ChevronDown, UserCheck, Users, UtensilsCrossed, ClipboardList, LayoutGrid, Plus, Loader2, WifiOff, Upload, FileSpreadsheet } from "lucide-react";
 import * as XLSX from "xlsx";
 
 const SUPABASE_URL = "https://onrdmjrrvgztkzmwdzzq.supabase.co";
@@ -231,6 +231,7 @@ function LoginScreen({ onSuccess }) {
 
 function MainApp({ onLogout }) {
   const [guests, setGuests] = useState([]);
+  const [events, setEvents] = useState([]);
   const [eventId, setEventId] = useState(null);
   const [eventName, setEventName] = useState("");
   const [view, setView] = useState("reception");
@@ -239,6 +240,7 @@ function MainApp({ onLogout }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [showEventSwitcher, setShowEventSwitcher] = useState(false);
   const pollRef = useRef(null);
 
   const fetchGuests = useCallback(async (evId) => {
@@ -246,27 +248,51 @@ function MainApp({ onLogout }) {
     setGuests(rows.map(normalizeGuest));
   }, []);
 
-  // Cargar (o crear) el evento activo, y arrancar sincronización
+  const switchEvent = useCallback(
+    async (ev) => {
+      setEventId(ev.id);
+      setEventName(ev.name);
+      localStorage.setItem("ci_current_event", ev.id);
+      setLoading(true);
+      try {
+        await fetchGuests(ev.id);
+        setError(null);
+      } catch (e) {
+        setError(`No se pudo conectar: ${e.message}`);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [fetchGuests]
+  );
+
+  const createEvent = async (name) => {
+    const created = await sb(`events`, { method: "POST", body: JSON.stringify({ name }) });
+    const ev = created[0];
+    setEvents((evs) => [ev, ...evs]);
+    await switchEvent(ev);
+    setShowEventSwitcher(false);
+  };
+
+  // Cargar la lista de eventos y el evento activo, y arrancar sincronización
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         setLoading(true);
-        let events = await sb(`events?order=created_at.desc&limit=1`);
-        let ev;
-        if (!events.length) {
-          const created = await sb(`events`, {
-            method: "POST",
-            body: JSON.stringify({ name: "Mi evento" }),
-          });
-          ev = created[0];
-        } else {
-          ev = events[0];
+        let evs = await sb(`events?order=created_at.desc`);
+        if (!evs.length) {
+          const created = await sb(`events`, { method: "POST", body: JSON.stringify({ name: "Mi evento" }) });
+          evs = created;
         }
         if (cancelled) return;
-        setEventId(ev.id);
-        setEventName(ev.name);
-        await fetchGuests(ev.id);
+        setEvents(evs);
+        const savedId = localStorage.getItem("ci_current_event");
+        const found = evs.find((e) => e.id === savedId);
+        const active = found || evs[0];
+        setEventId(active.id);
+        setEventName(active.name);
+        await fetchGuests(active.id);
         setError(null);
       } catch (e) {
         if (!cancelled) setError(`No se pudo conectar: ${e.message}`);
@@ -390,9 +416,10 @@ function MainApp({ onLogout }) {
       {/* Top bar */}
       <div style={{ background: "#1B2430", padding: "18px 20px", position: "sticky", top: 0, zIndex: 10 }}>
         <div style={{ maxWidth: 560, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div>
-            <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 20, color: "#FAF7F2", letterSpacing: 0.2 }}>
+          <div onClick={() => setShowEventSwitcher(true)} style={{ cursor: "pointer" }}>
+            <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 20, color: "#FAF7F2", letterSpacing: 0.2, display: "flex", alignItems: "center", gap: 6 }}>
               {eventName || "Cargando..."}
+              <ChevronDown size={15} color="#B8935F" />
             </div>
             <div style={{ fontSize: 12.5, color: loading ? "#8A8578" : "#B8935F", fontWeight: 500, marginTop: 1, display: "flex", alignItems: "center", gap: 5 }}>
               {loading ? (
@@ -456,6 +483,19 @@ function MainApp({ onLogout }) {
       )}
 
       {showAdd && <AddGuestModal onClose={() => setShowAdd(false)} onSave={addGuest} />}
+
+      {showEventSwitcher && (
+        <EventSwitcherModal
+          events={events}
+          currentId={eventId}
+          onClose={() => setShowEventSwitcher(false)}
+          onSelect={(ev) => {
+            switchEvent(ev);
+            setShowEventSwitcher(false);
+          }}
+          onCreate={createEvent}
+        />
+      )}
     </div>
   );
 }
@@ -978,6 +1018,113 @@ function AddGuestModal({ onClose, onSave }) {
         >
           {saving ? "Guardando..." : "Agregar invitado"}
         </button>
+      </div>
+    </div>
+  );
+}
+
+function EventSwitcherModal({ events, currentId, onClose, onSelect, onCreate }) {
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const handleCreate = async () => {
+    if (!name.trim() || saving) return;
+    setSaving(true);
+    try {
+      await onCreate(name.trim());
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "#1B243088", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50 }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{ background: "#FAF7F2", borderRadius: "20px 20px 0 0", width: "100%", maxWidth: 560, padding: "18px 18px 28px", maxHeight: "80vh", overflowY: "auto" }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+          <button onClick={onClose} style={{ border: "none", background: "none", color: "#8A7F6B", display: "flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, padding: 4 }}>
+            <ChevronLeft size={17} /> Cerrar
+          </button>
+          <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 15 }}>Eventos</div>
+          <div style={{ width: 58 }} />
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 18 }}>
+          {events.map((ev) => (
+            <button
+              key={ev.id}
+              onClick={() => onSelect(ev)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "13px 14px",
+                borderRadius: 12,
+                border: `1.5px solid ${ev.id === currentId ? "#B8935F" : "#E5DFD3"}`,
+                background: ev.id === currentId ? "#FBF3E7" : "#fff",
+                textAlign: "left",
+              }}
+            >
+              <span style={{ fontWeight: 600, fontSize: 14.5, color: "#1B2430" }}>{ev.name}</span>
+              {ev.id === currentId && <Check size={17} color="#B8935F" />}
+            </button>
+          ))}
+        </div>
+
+        {creating ? (
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 700, color: "#8A7F6B", textTransform: "uppercase", letterSpacing: 0.3 }}>Nombre del evento</label>
+            <input
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Ej: Boda Pérez - García"
+              style={{ width: "100%", padding: "11px 13px", borderRadius: 10, border: "1.5px solid #E5DFD3", fontSize: 15, marginTop: 6, marginBottom: 14, outline: "none" }}
+            />
+            <button
+              onClick={handleCreate}
+              disabled={!name.trim() || saving}
+              style={{
+                width: "100%",
+                padding: "13px",
+                borderRadius: 12,
+                border: "none",
+                background: name.trim() ? "#1B2430" : "#D8D2C4",
+                color: "#FAF7F2",
+                fontWeight: 700,
+                fontSize: 14.5,
+              }}
+            >
+              {saving ? "Creando..." : "Crear y usar este evento"}
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setCreating(true)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+              width: "100%",
+              padding: "13px",
+              borderRadius: 12,
+              border: "1.5px dashed #B8935F",
+              background: "#FBF3E7",
+              color: "#8A5A2A",
+              fontWeight: 700,
+              fontSize: 14,
+            }}
+          >
+            <Plus size={17} /> Nuevo evento
+          </button>
+        )}
       </div>
     </div>
   );
