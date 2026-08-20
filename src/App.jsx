@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from "react";
-import { Search, Check, X, ChevronLeft, ChevronDown, UserCheck, Users, UtensilsCrossed, ClipboardList, LayoutGrid, Plus, Loader2, WifiOff, Upload, FileSpreadsheet } from "lucide-react";
+import { Search, Check, X, ChevronLeft, ChevronDown, UserCheck, Users, UtensilsCrossed, ClipboardList, LayoutGrid, Plus, Loader2, WifiOff, Upload, FileSpreadsheet, Download } from "lucide-react";
 import * as XLSX from "xlsx";
 
 const SUPABASE_URL = "https://onrdmjrrvgztkzmwdzzq.supabase.co";
@@ -467,7 +467,7 @@ function MainApp({ onLogout }) {
             onAdd={() => setShowAdd(true)}
           />
         ) : (
-          <AdminView guests={guests} stats={stats} tables={tables} onImport={importGuests} />
+          <AdminView guests={guests} stats={stats} tables={tables} onImport={importGuests} eventName={eventName} />
         )}
       </div>
 
@@ -684,7 +684,42 @@ function StatPill({ label, value, tone }) {
   );
 }
 
-function AdminView({ guests, stats, tables, onImport }) {
+function exportGuestsToExcel(guests, eventName) {
+  const rows = guests.map((g) => ({
+    Nombre: g.name,
+    Mesa: g.table,
+    Estado: g.status === "arrived" ? "Llegó" : "No llegó",
+    Dieta: g.diet.join(", "),
+    Notas: g.notes,
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws["!cols"] = [{ wch: 26 }, { wch: 8 }, { wch: 12 }, { wch: 22 }, { wch: 34 }];
+
+  const arrived = guests.filter((g) => g.status === "arrived").length;
+  const dietGroups = {};
+  for (const g of guests) for (const d of g.diet) (dietGroups[d] = dietGroups[d] || []).push(g.name);
+  const resumenRows = [
+    ["Resumen del evento", eventName],
+    [],
+    ["Total invitados", guests.length],
+    ["Llegaron", arrived],
+    ["No llegaron", guests.length - arrived],
+    [],
+    ["Restricciones alimentarias", ""],
+    ...Object.entries(dietGroups).map(([diet, names]) => [diet, names.join(", ")]),
+  ];
+  const wsResumen = XLSX.utils.aoa_to_sheet(resumenRows);
+  wsResumen["!cols"] = [{ wch: 24 }, { wch: 60 }];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, wsResumen, "Resumen");
+  XLSX.utils.book_append_sheet(wb, ws, "Invitados");
+
+  const safeName = eventName.replace(/[^a-z0-9áéíóúñ]+/gi, "-").toLowerCase();
+  XLSX.writeFile(wb, `resumen-${safeName || "evento"}.xlsx`);
+}
+
+function AdminView({ guests, stats, tables, onImport, eventName }) {
   const [showImport, setShowImport] = useState(false);
   const pct = stats.total ? Math.round((stats.arrived / stats.total) * 100) : 0;
   const dietGroups = useMemo(() => {
@@ -700,26 +735,47 @@ function AdminView({ guests, stats, tables, onImport }) {
 
   return (
     <div>
-      <button
-        onClick={() => setShowImport(true)}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: 8,
-          width: "100%",
-          padding: "12px",
-          borderRadius: 12,
-          border: "1.5px dashed #B8935F",
-          background: "#FBF3E7",
-          color: "#8A5A2A",
-          fontWeight: 700,
-          fontSize: 13.5,
-          marginBottom: 18,
-        }}
-      >
-        <FileSpreadsheet size={17} /> Importar invitados desde Excel
-      </button>
+      <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+        <button
+          onClick={() => setShowImport(true)}
+          style={{
+            flex: 1,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 8,
+            padding: "12px",
+            borderRadius: 12,
+            border: "1.5px dashed #B8935F",
+            background: "#FBF3E7",
+            color: "#8A5A2A",
+            fontWeight: 700,
+            fontSize: 13,
+          }}
+        >
+          <FileSpreadsheet size={16} /> Importar
+        </button>
+        <button
+          onClick={() => exportGuestsToExcel(guests, eventName)}
+          disabled={guests.length === 0}
+          style={{
+            flex: 1,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 8,
+            padding: "12px",
+            borderRadius: 12,
+            border: "1.5px solid #E5DFD3",
+            background: guests.length === 0 ? "#F0ECE3" : "#fff",
+            color: guests.length === 0 ? "#B8AFA0" : "#1B2430",
+            fontWeight: 700,
+            fontSize: 13,
+          }}
+        >
+          <Download size={16} /> Exportar
+        </button>
+      </div>
 
       <div style={{ background: "#fff", border: "1.5px solid #E5DFD3", borderRadius: 16, padding: 18, marginBottom: 18 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
