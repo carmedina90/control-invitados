@@ -31,23 +31,78 @@ function parseGuestsWorkbook(arrayBuffer) {
     .filter((g) => g.name && g.table);
 }
 
-async function sb(path, options = {}) {
+async function sb(path, options = {}, retry = true) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...options,
     headers: {
       apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
+      Authorization: `Bearer ${currentAccessToken || SUPABASE_KEY}`,
       "Content-Type": "application/json",
       Prefer: options.prefer || "return=representation",
       ...(options.headers || {}),
     },
   });
+  if (res.status === 401 && retry) {
+    const refreshed = await tryRefreshSession();
+    if (refreshed) return sb(path, options, false);
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`${res.status} ${text}`);
   }
   if (res.status === 204) return null;
   return res.json();
+}
+
+// --- Autenticación ---
+let currentAccessToken = null;
+
+function saveSession(data) {
+  currentAccessToken = data.access_token;
+  localStorage.setItem("ci_access_token", data.access_token);
+  localStorage.setItem("ci_refresh_token", data.refresh_token);
+}
+
+function clearSession() {
+  currentAccessToken = null;
+  localStorage.removeItem("ci_access_token");
+  localStorage.removeItem("ci_refresh_token");
+}
+
+async function authRequest(grantType, body) {
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=${grantType}`, {
+    method: "POST",
+    headers: { apikey: SUPABASE_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error_description || data.msg || "No se pudo iniciar sesión");
+  return data;
+}
+
+async function signIn(email, password) {
+  const data = await authRequest("password", { email, password });
+  saveSession(data);
+  return data;
+}
+
+async function tryRefreshSession() {
+  const refreshToken = localStorage.getItem("ci_refresh_token");
+  if (!refreshToken) return false;
+  try {
+    const data = await authRequest("refresh_token", { refresh_token: refreshToken });
+    saveSession(data);
+    return true;
+  } catch {
+    clearSession();
+    return false;
+  }
+}
+
+function restoreSession() {
+  const token = localStorage.getItem("ci_access_token");
+  if (token) currentAccessToken = token;
+  return !!token;
 }
 
 const DIET_OPTIONS = ["Celíaco", "Vegetariano", "Vegano", "Diabético", "Alergia"];
@@ -76,6 +131,105 @@ function normalizeGuest(row) {
 }
 
 export default function App() {
+  const [loggedIn, setLoggedIn] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(true);
+
+  useEffect(() => {
+    const hasToken = restoreSession();
+    setLoggedIn(hasToken);
+    setCheckingSession(false);
+  }, []);
+
+  if (checkingSession) {
+    return (
+      <div style={{ minHeight: "100vh", background: "#FAF7F2", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <Loader2 size={22} className="spin" color="#8A7F6B" />
+      </div>
+    );
+  }
+
+  if (!loggedIn) {
+    return <LoginScreen onSuccess={() => setLoggedIn(true)} />;
+  }
+
+  return <MainApp onLogout={() => { clearSession(); setLoggedIn(false); }} />;
+}
+
+function LoginScreen({ onSuccess }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      await signIn(email.trim(), password);
+      onSuccess();
+    } catch (err) {
+      setError("Email o contraseña incorrectos.");
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#1B2430", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Public Sans', sans-serif" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Public+Sans:wght@400;500;600;700&display=swap');
+        * { box-sizing: border-box; }
+        button { font-family: inherit; cursor: pointer; }
+        input { font-family: inherit; }
+      `}</style>
+      <form
+        onSubmit={handleSubmit}
+        style={{ background: "#FAF7F2", borderRadius: 20, padding: "32px 26px", width: "100%", maxWidth: 380 }}
+      >
+        <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 24, color: "#1B2430", marginBottom: 4, textAlign: "center" }}>
+          Control de Invitados
+        </div>
+        <div style={{ fontSize: 13, color: "#8A7F6B", textAlign: "center", marginBottom: 26 }}>
+          Ingresá con tu usuario del salón
+        </div>
+
+        <label style={{ fontSize: 12, fontWeight: 700, color: "#8A7F6B", textTransform: "uppercase", letterSpacing: 0.3 }}>Email</label>
+        <input
+          type="email"
+          required
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          style={{ width: "100%", padding: "11px 13px", borderRadius: 10, border: "1.5px solid #E5DFD3", fontSize: 15, marginTop: 6, marginBottom: 16, outline: "none" }}
+        />
+
+        <label style={{ fontSize: 12, fontWeight: 700, color: "#8A7F6B", textTransform: "uppercase", letterSpacing: 0.3 }}>Contraseña</label>
+        <input
+          type="password"
+          required
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          style={{ width: "100%", padding: "11px 13px", borderRadius: 10, border: "1.5px solid #E5DFD3", fontSize: 15, marginTop: 6, marginBottom: 20, outline: "none" }}
+        />
+
+        {error && (
+          <div style={{ fontSize: 13, color: "#A8493D", background: "#F4DEDC", borderRadius: 10, padding: "10px 12px", marginBottom: 16 }}>
+            {error}
+          </div>
+        )}
+
+        <button
+          type="submit"
+          disabled={loading}
+          style={{ width: "100%", padding: "13px", borderRadius: 12, border: "none", background: "#1B2430", color: "#FAF7F2", fontWeight: 700, fontSize: 14.5 }}
+        >
+          {loading ? "Ingresando..." : "Ingresar"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function MainApp({ onLogout }) {
   const [guests, setGuests] = useState([]);
   const [eventId, setEventId] = useState(null);
   const [eventName, setEventName] = useState("");
@@ -254,9 +408,18 @@ export default function App() {
               )}
             </div>
           </div>
-          <div style={{ display: "flex", background: "#FAF7F215", borderRadius: 10, padding: 3 }}>
-            <ViewToggleBtn active={view === "reception"} onClick={() => setView("reception")} icon={<UserCheck size={15} />} label="Recepción" />
-            <ViewToggleBtn active={view === "admin"} onClick={() => setView("admin")} icon={<LayoutGrid size={15} />} label="Admin" />
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ display: "flex", background: "#FAF7F215", borderRadius: 10, padding: 3 }}>
+              <ViewToggleBtn active={view === "reception"} onClick={() => setView("reception")} icon={<UserCheck size={15} />} label="Recepción" />
+              <ViewToggleBtn active={view === "admin"} onClick={() => setView("admin")} icon={<LayoutGrid size={15} />} label="Admin" />
+            </div>
+            <button
+              onClick={onLogout}
+              aria-label="Cerrar sesión"
+              style={{ width: 34, height: 34, borderRadius: 9, border: "none", background: "#FAF7F215", color: "#CFC9BE", display: "flex", alignItems: "center", justifyContent: "center" }}
+            >
+              <X size={15} />
+            </button>
           </div>
         </div>
       </div>
