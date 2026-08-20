@@ -105,6 +105,22 @@ function restoreSession() {
   return !!token;
 }
 
+function parseJwt(token) {
+  try {
+    const payload = token.split(".")[1];
+    const json = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+function getCurrentUserId() {
+  if (!currentAccessToken) return null;
+  const payload = parseJwt(currentAccessToken);
+  return payload?.sub || null;
+}
+
 const DIET_OPTIONS = ["Celíaco", "Vegetariano", "Vegano", "Diabético", "Alergia"];
 
 const DIET_STYLES = {
@@ -234,6 +250,7 @@ function MainApp({ onLogout }) {
   const [events, setEvents] = useState([]);
   const [eventId, setEventId] = useState(null);
   const [eventName, setEventName] = useState("");
+  const [role, setRole] = useState("admin");
   const [view, setView] = useState("reception");
   const [query, setQuery] = useState("");
   const [editingId, setEditingId] = useState(null);
@@ -242,6 +259,24 @@ function MainApp({ onLogout }) {
   const [showAdd, setShowAdd] = useState(false);
   const [showEventSwitcher, setShowEventSwitcher] = useState(false);
   const pollRef = useRef(null);
+  const isRecepcionista = role === "recepcionista";
+
+  useEffect(() => {
+    const uid = getCurrentUserId();
+    if (!uid) return;
+    sb(`profiles?id=eq.${uid}&select=role`)
+      .then((rows) => {
+        if (rows.length) setRole(rows[0].role);
+      })
+      .catch(() => {
+        // si falla, se queda con "admin" por defecto
+      });
+  }, []);
+
+  // Si es recepcionista, siempre se queda en la vista de Recepción
+  useEffect(() => {
+    if (isRecepcionista) setView("reception");
+  }, [isRecepcionista]);
 
   const fetchGuests = useCallback(async (evId) => {
     const rows = await sb(`guests?event_id=eq.${evId}&order=table_number.asc,name.asc`);
@@ -416,10 +451,10 @@ function MainApp({ onLogout }) {
       {/* Top bar */}
       <div style={{ background: "#1B2430", padding: "18px 20px", position: "sticky", top: 0, zIndex: 10 }}>
         <div style={{ maxWidth: 560, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div onClick={() => setShowEventSwitcher(true)} style={{ cursor: "pointer" }}>
+          <div onClick={() => !isRecepcionista && setShowEventSwitcher(true)} style={{ cursor: isRecepcionista ? "default" : "pointer" }}>
             <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 20, color: "#FAF7F2", letterSpacing: 0.2, display: "flex", alignItems: "center", gap: 6 }}>
               {eventName || "Cargando..."}
-              <ChevronDown size={15} color="#B8935F" />
+              {!isRecepcionista && <ChevronDown size={15} color="#B8935F" />}
             </div>
             <div style={{ fontSize: 12.5, color: loading ? "#8A8578" : "#B8935F", fontWeight: 500, marginTop: 1, display: "flex", alignItems: "center", gap: 5 }}>
               {loading ? (
@@ -438,7 +473,9 @@ function MainApp({ onLogout }) {
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{ display: "flex", background: "#FAF7F215", borderRadius: 10, padding: 3 }}>
               <ViewToggleBtn active={view === "reception"} onClick={() => setView("reception")} icon={<UserCheck size={15} />} label="Recepción" />
-              <ViewToggleBtn active={view === "admin"} onClick={() => setView("admin")} icon={<LayoutGrid size={15} />} label="Admin" />
+              {!isRecepcionista && (
+                <ViewToggleBtn active={view === "admin"} onClick={() => setView("admin")} icon={<LayoutGrid size={15} />} label="Admin" />
+              )}
             </div>
             <button
               onClick={onLogout}
@@ -484,7 +521,7 @@ function MainApp({ onLogout }) {
 
       {showAdd && <AddGuestModal onClose={() => setShowAdd(false)} onSave={addGuest} />}
 
-      {showEventSwitcher && (
+      {showEventSwitcher && !isRecepcionista && (
         <EventSwitcherModal
           events={events}
           currentId={eventId}
